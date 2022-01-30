@@ -1,0 +1,27 @@
+---
+title: Post script
+subtitle: Takeyabu yaketa
+contents: ["Bamboo grove", "", "", ""]
+cocktail: [ "1.5 oz dry sherry", "1.5 oz dry vermouth", "1 dash Angostura bitters", "1 dash orange bitters", "Lemon twist" ]
+
+---
+
+<script>
+    // import foo from './bar.js';
+</script>
+
+# {title}
+## {subtitle}
+---
+#### {contents[0]}
+_Takeyabu yaketa_ is a Japanese _kaibun_ (roughly equivalent to a palindrome in English). Wikipedia says it means "A bamboo grove has been burned."
+
+Here's the ingredients to a cocktail called _Bamboo_ you can make when you're trying to get rid of a bottle of sherry:
+
+<ul class="cocktail">
+    {#each cocktail as ingred}
+      <li>{ingred}</li>
+    {/each}
+</ul>
+
+

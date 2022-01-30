@@ -1,0 +1,242 @@
+---
+title: AWS S3 * 2
+subtitle: My new deployment workflow using AWS SDK for Rust
+contents:
+    [
+        'Routing with AWS Smooth Storage Service (S3)',
+        'Static sites with Svelte (S3 * 2)',
+        'Deploying with (AWS SDK for) Rust',
+        'TODO',
+        'Block Quote End the Post',
+    ]
+---
+
+<script>
+    import Disclaimer from '../components/Disclaimer.svelte';
+</script>
+
+# {title}
+
+## {subtitle}
+
+---
+
+Once, when my brain was smoother, I hosted a static site on AWS Simple Storage Service (S3). I didn't understand routing or callbacks, but there I was hacking an Express server to output flat HTML files. In a callback. Which meant to actually output HTML I had to crawl my own site. But after that, I simply called `yolo.js` to go live.
+
+I still host my personal site on S3, though I use _modern_ web tools like Svelte and Rollup that do my ~~thinking~~ compiling for me. Who needs routing when you can have a _single page application_? Web development today is like _Olay Regenerist_ for the koala brain.
+
+Two recent circumstances, however, have put a wrinkle in my smooth-brained bliss:
+
+1. I foresee a sudden drop in personal time for development as I transition out of unemployment, and
+2. AWS announced the Developer Preview of the AWS SDK for Rust.
+
+Come along as I revamp my deployment workflow for hosting static sites on AWS S3.
+
+#### {contents[0]}
+
+Say I have a static site hosted from an S3 bucket `example.com` and I want to add a "route" to another static asset in that bucket, say `example.com/app`.
+
+_How can I navigate to this "route" if the asset in question is literally named `app.html`?_
+
+I couldn't. So I had two choices: I either use the Web 2.0-looking address `example.com/app.html` or just upload the file without an extension. 🤯
+
+> ... S3 doesn't really have a folder structure, but rather has a flat structure of keys and values with lots of cleverness that enables it to simulate a hierarchical folder structure. <br><br> <cite> — [Mark Gilbert's Tech Blog](https://www.mark-gilbert.co.uk/serving-index-pages-from-non-root-locations-with-aws-cloudfront/) </cite>
+
+While uploading files sans file extension is deliciously sneaky, I could have solved my routing problem by uploading a `text/html` file to the `example.com` bucket, simply called `app/index.html`. S3 is equally happy to serve `example.com/app` in both cases.
+
+#### {contents[1]}
+
+So, why all the hate for specifically named HTML files (with unspecified file extensions)? _If the route fits, follow it!_ ... Right?
+
+The first reason I decided against my file extension hack is that \*\*licks lips\*\* _I use Svelte for web development_. All my (definitely reusable) components get compiled into one big Javascript file that I embed in `index.html`. With a virtual subdirectory structure, I wouldn't have to worry about intra-bucket name collisions.
+
+Given the canonical file structure of Svelte projects ...
+
+```shell
+project
+│   package.json
+│   README.md
+│   rollup.config.js
+│
+└───public
+│   │   global.css
+│   │   index.html
+│   │
+│   └───build
+│       │   bundle.css
+│       │   bundle.js
+│       │   bundle.js.map
+│
+└───src
+    │   App.svelte
+    │   main.js
+    │   ...
+```
+
+... all I need to host my static site is everything in `public`. If I add a step to my Rollup build that outputs an array of file names, then I can consume that array when I'm ready to deploy. To this end, I wrote an ES module that would output the following:
+
+```shell
+found 5 files in './public'
+[
+    'build/bundle.css',
+    'build/bundle.js',
+    'build/bundle.js.map',
+    'global.css',
+    'index.html'
+]
+```
+
+The module saves this array to `project/out/public.json` for later batches.
+
+#### {contents[2]}
+
+The second reason I decided to go with a virtual subdirectory structure in my new workflow became clear as I wrote the CLI that consumes our minty-fresh `public.json`. The problem arose after my first test deployment. Excited, I navigated to my domain ...
+
+![inspecific upload](download.png)
+
+... and remembered painfully why we must specify our file types. AWS inferred my assets were all of type `application/octet-stream` because I failed to set the content type when I uploaded to S3. I could just specify each file's type in flat JSON files like in the good ol' days, but there must be a better way.
+
+To get the content type of a file, I follow the [Rust cookbook](https://rust-lang-nursery.github.io/rust-cookbook/web/mime.html#get-mime-type-from-filename) basically verbatim:
+
+```rust
+fn get_mime_type(filename: &str) -> Result<Mime, &'static str> {
+    let parts: Vec<&str> = filename.split('.').collect();
+    let res: Mime = match parts.last() {
+        Some(v) => match *v {
+            "css" => mime::TEXT_CSS,
+            "html" => mime::TEXT_HTML,
+            "js" => mime::APPLICATION_JAVASCRIPT,
+            // ...
+            &_ => mime::TEXT_PLAIN,
+        },
+        None => mime::TEXT_PLAIN,
+    };
+    Ok(res)
+}
+```
+
+`filename` above is generated by prepending the absolute path to our root `project` directory to each entry in our `public.json` array. This absolute path can be passed to our CLI as a required argument. But the real hiccup comes once we're ready to upload a file, as in this (abridged) example:
+
+```rust
+let mime: Mime = get_mime_type(&filename)
+    .expect("Could not get media type");
+let body: ByteStream =
+    ByteStream::from_path(Path::new(&filename)).await?;
+// `client` is of type aws_sdk_s3::Client
+client.put_object()
+    .content_type(mime.to_string())
+    .bucket(bucket)
+    .key(key)
+    .body(body)
+    .send()
+    .await?;
+```
+
+`key` above comes directly from `public.json`. If we wanted to sneakily remove the file extension from uploaded assets, we would modify `key` before the call to `put_object()`.
+
+But how do we know which file extensions to remove? We could potentially remove all file extensions of a specific content type (e.g. `text/html`), but that's probably casting too wide a net. We could hardcode specific file names (e.g. `app.html`), but then we may as well just hardcode the values in JSON again.
+
+To me, the simpler option was to add an optional `--subdirectory` flag to the CLI that will prepend a string to each static asset specified in `public.json`.
+
+```shell
+∫ s3-deploy modified -p /Local/static/assets
+
+2 files modified recently:
+   build/bundle.js
+   index.html
+∫ s3-deploy yolo -b example.com -p /Local/static/assets -s app
+
+Upload success for app/build/bundle.js
+   Entity tag "<REDACTED>"
+Upload success for app/index.html
+   Entity tag "<REDACTED>"
+∫
+```
+
+Now, you can navigate to `example.com/app` to see your beautiful static site!
+
+#### {contents[3]}
+
+<div class="todo">
+    <ul>
+        <li><input type="checkbox"> Forcing users to organize their projects to include <code>public</code> and <code>out</code> directories is awkward at best for a CLI.</li>
+        <li><input type="checkbox"> Recently uploaded files (last hour?) should not be reuploaded.
+        <li><input type="checkbox"> Does this blog not have internal navigation to other blog posts?</li>
+    </ul>
+</div>
+
+<Disclaimer>
+    The AWS SDK for Rust is currently in <a href="https://aws.amazon.com/about-aws/whats-new/2021/12/aws-sdk-rust-developer-preview/">Developer Preview</a> and should not be used in production!
+</Disclaimer>
+
+_To get started using `s3-deploy`, [you can find it on Github](https://github.com/olmigs/s3-deploy). To see a static site deployed with `s3-deploy`, [you're lookin' at one](http://mdguerrero.com)!_
+
+#### {contents[4]}
+
+> We, life’s pride and cared-for crown, <br> Have lost that cheer and charm of earth’s past prime: <br> Our make and making break, are breaking, down <br> To man’s last dust, drain fast towards man’s first slime. <br><br> <cite> — Gerard Manley Hopkins, ["The Sea and the Skylark"](https://poets.org/poem/sea-and-skylark) </cite>
+
+<br><br>
+
+<style>
+    .todo li {
+        list-style: none;
+    }
+    a {
+        text-decoration: none;
+        padding: 3px;
+        color: #f6ba6c;
+        border: 7px transparent  #faebd7;
+    }
+    a:hover {
+        background-color: #c7b7b7;
+        color: #233342;
+        border-radius: 7px;
+        padding: 3px;
+        border: 7px transparent  #faebd7;
+        cursor: pointer;
+    }
+    blockquote {
+        background-color: #527685;
+        padding: 5px;
+        border-radius: 15px;
+        box-shadow: 3px 3px #888888;
+    }
+    blockquote p {
+        padding-left: 5px;
+    }
+    cite {
+        display: block;
+        text-align: right;
+    }
+    code {
+        background-color: #f6ba6c;
+        color: #4e352b;
+        margin: 5px;
+        padding: 3px;
+        padding-left: 5px;
+        padding-right: 5px;
+        border: 3px transparent  #faebd7;
+        border-radius: 7px;
+        white-space: nowrap;
+    }
+    img {
+        display: block;
+        margin-left: auto;
+        margin-right: auto;
+        border-radius: 15px;
+        box-shadow: 3px 3px  #888888;
+    }
+    h1, h2, h4 {
+        color: #eb714c;
+    }
+    pre {
+        border: 1px dotted #fadeef;
+        border-radius: 7px;
+    }
+    @media (max-width: 500px) {
+        img {
+            width: 100%;
+            transform: scale(.80);
+        }
+    }
+</style>
